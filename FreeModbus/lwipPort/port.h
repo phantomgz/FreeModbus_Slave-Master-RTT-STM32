@@ -78,6 +78,8 @@ typedef enum
 void            TcpvMBPortLog( eMBPortLogLevel eLevel, const CHAR * szModule, const CHAR * szFmt,
                                ... );
 
+#define assert_param assert
+
 #ifdef __cplusplus
 PR_END_EXTERN_C
 #endif

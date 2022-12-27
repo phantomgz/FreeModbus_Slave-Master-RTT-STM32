@@ -49,6 +49,8 @@
 #include "mbport.h"
 #include "port.h"
 
+#include "defs.h"
+
 
 
 /* ----------------------- MBAP Header --------------------------------------*/
@@ -58,7 +60,6 @@
 
 /* ----------------------- Defines  -----------------------------------------*/
 
-#define LOG PRINTF
 
 #define MB_TCP_DEFAULT_PORT 502 /* TCP listening port. */
 #define MB_TCP_POOL_TIMEOUT 50  /* pool timeout for event waiting. */
@@ -70,20 +71,25 @@
 
 #define MB_TCP_DEBUG        1   /* Set to 1 for additional debug output. */
 
-#define MB_TCP_BUF_SIZE     ( 256 + 7 ) /* Must hold a complete Modbus TCP frame. */
+// by phantom: Add 2 byte for CRC for modbus over TCP
+#define MB_TCP_BUF_SIZE     ( 256 + 7 +2 ) /* Must hold a complete Modbus TCP frame. */
 
 #define EV_CONNECTION       0
 #define EV_CLIENT           1
 #define EV_NEVENTS          EV_CLIENT + 1
 
 /* ----------------------- Static variables ---------------------------------*/
-SOCKET          xListenSocket;
+SOCKET          xListenSocket = INVALID_SOCKET;
 SOCKET          xClientSocket = INVALID_SOCKET;
 static fd_set   allset;
 
 static UCHAR    aucTCPBuf[MB_TCP_BUF_SIZE];
 static USHORT   usTCPBufPos;
 static USHORT   usTCPFrameBytesLeft;
+
+static StaticTask_t MBTaskBuffer;
+static StackType_t MBTaskStack[ DEFAULT_THREAD_STACKSIZE ];
+static TaskHandle_t MBTaskHandle = NULL;
 
 /* ----------------------- External functions -------------------------------*/
 CHAR           *WsaError2String( int dwError );
@@ -130,6 +136,9 @@ xMBTCPPortInit( USHORT usTCPPort )
         LOG("Listen socket failed.\r\n" );
         return FALSE;
     }
+    else {
+        LOG("Listen socket: %d\n", usPort);
+    }
     FD_ZERO( &allset );
     FD_SET( xListenSocket, &allset );
     return TRUE;
@@ -147,7 +156,9 @@ vMBTCPPortClose(  )
     if( xListenSocket != SOCKET_ERROR )
     {
         close( xListenSocket );
+        xListenSocket = SOCKET_ERROR;
     }
+    LOG("vMBTCPPortClose()\n");
 }
 
 void
@@ -187,7 +198,7 @@ xMBPortTCPPool( void )
     fd_set          fread;
     struct timeval  tval;
 
-    tval.tv_sec = 0;
+    tval.tv_sec = 1; //0;
     tval.tv_usec = 5000;
     int             ret;
     USHORT          usLength;
@@ -208,7 +219,10 @@ xMBPortTCPPool( void )
         }
         if( FD_ISSET( xListenSocket, &allset ) )
         {
-            ( void )prvbMBPortAcceptClient(  );
+            if( TRUE != prvbMBPortAcceptClient(  ) ) {
+                vMBTCPPortClose();
+                return FALSE;
+            }
         }
     }
     while( TRUE )
@@ -231,6 +245,7 @@ xMBPortTCPPool( void )
                 {
                     close( xClientSocket );
                     xClientSocket = INVALID_SOCKET;
+                    LOG("xClientSocket close\n");
                     return TRUE;
                 }
                 usTCPBufPos += ret;
@@ -338,6 +353,7 @@ xMBTCPPortSendResponse( const UCHAR * pucMBTCPFrame, USHORT usTCPLength )
 void
 prvvMBPortReleaseClient(  )
 {
+    #warning "recv() clean not fully complet."
     ( void )recv( xClientSocket, &aucTCPBuf[0], MB_TCP_BUF_SIZE, 0 );
 
     ( void )close( xClientSocket );
@@ -360,6 +376,7 @@ prvbMBPortAcceptClient(  )
     else if( ( xNewSocket = accept( xListenSocket, NULL, NULL ) ) == INVALID_SOCKET )
     {
         bOkay = FALSE;
+        LOG("mb accept failed\n");
     }
     else
     {
@@ -367,6 +384,54 @@ prvbMBPortAcceptClient(  )
         usTCPBufPos = 0;
         usTCPFrameBytesLeft = MB_TCP_FUNC;
         bOkay = TRUE;
+        LOG("mb accept success\n");
     }
     return bOkay;
+}
+
+extern eMBErrorCode eMBTcpPoll( void );
+
+static void taskMBSocket(void *arg)
+{
+    eMBErrorCode    xStatus;
+    (void)arg;
+
+    for( ;; )
+    {
+        if( eMBTCPInit( MB_TCP_PORT_USE_DEFAULT ) != MB_ENOERR )
+        {
+            PRINTF( "FreeModbus: can't initialize modbus stack!\r\n" );
+        }
+        else if( eMBEnable(  ) != MB_ENOERR )
+        {
+            PRINTF("FreeModbus: can't enable modbus stack!\r\n");
+        }
+        else
+        {
+            do
+            {
+                xStatus = eMBTcpPoll(  );
+            }
+            while( xStatus == MB_ENOERR );
+        }
+        /* An error occured. Maybe we can restart. */
+        ( void )eMBDisable(  );
+        ( void )eMBClose(  );
+
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+void MBService_init(void)
+{
+    MBTaskHandle = xTaskCreateStatic(
+            taskMBSocket,
+            "MBTcp service",
+            DEFAULT_THREAD_STACKSIZE,
+            (void*) 0,
+            DEFAULT_THREAD_PRIO,
+            MBTaskStack,
+            &MBTaskBuffer
+        );
+
 }

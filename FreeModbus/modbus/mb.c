@@ -95,7 +95,7 @@ BOOL( *pxMBFrameCBTransmitFSMCur ) ( void );
 /* An array of Modbus functions handlers which associates Modbus function
  * codes with implementing functions.
  */
-static xMBFunctionHandler xFuncHandlers[MB_FUNC_HANDLERS_MAX] = {
+xMBFunctionHandler xFuncHandlers[MB_FUNC_HANDLERS_MAX] = {
 #if MB_FUNC_OTHER_REP_SLAVEID_ENABLED > 0
     {MB_FUNC_OTHER_REPORT_SLAVEID, eMBFuncReportSlaveID},
 #endif
@@ -361,7 +361,87 @@ eMBErrorCode eMBPoll( void )
             break;
 
         case EV_FRAME_RECEIVED:
-            eStatus = peMBFrameReceiveCur( &ucRcvAddress, &ucMBFrame, &usLength );
+            eStatus = peMBFrameReceiveCur( &ucRcvAddress, &ucMBFrame, &usLength ); // eMBRTUReceive()
+            if( eStatus == MB_ENOERR )
+            {
+                /* Check if the frame is for us. If not ignore the frame. */
+                if( ( ucRcvAddress == ucMBAddress ) || ( ucRcvAddress == MB_ADDRESS_BROADCAST ) )
+                {
+                    ( void )xMBPortEventPost( EV_EXECUTE );
+                }
+            }
+            break;
+
+        case EV_EXECUTE:
+            ucFunctionCode = ucMBFrame[MB_PDU_FUNC_OFF];
+            eException = MB_EX_ILLEGAL_FUNCTION;
+            for( i = 0; i < MB_FUNC_HANDLERS_MAX; i++ )
+            {
+                /* No more function handlers registered. Abort. */
+                if( xFuncHandlers[i].ucFunctionCode == 0 )
+                {
+                    break;
+                }
+                else if( xFuncHandlers[i].ucFunctionCode == ucFunctionCode )
+                {
+                    eException = xFuncHandlers[i].pxHandler( ucMBFrame, &usLength );
+                    break;
+                }
+            }
+
+            /* If the request was not sent to the broadcast address we
+             * return a reply. */
+            if( ucRcvAddress != MB_ADDRESS_BROADCAST )
+            {
+                if( eException != MB_EX_NONE )
+                {
+                    /* An exception occured. Build an error frame. */
+                    usLength = 0;
+                    ucMBFrame[usLength++] = ( UCHAR )( ucFunctionCode | MB_FUNC_ERROR );
+                    ucMBFrame[usLength++] = eException;
+                }
+                eStatus = peMBFrameSendCur( ucMBAddress, ucMBFrame, usLength );
+            }
+            break;
+
+        case EV_FRAME_SENT:
+            break;
+        }
+    }
+    return MB_ENOERR;
+}
+
+extern void MBSerialSession(void);
+
+eMBErrorCode eMBTcpPoll( void )
+{
+    static UCHAR   *ucMBFrame;
+    static UCHAR    ucRcvAddress;
+    static UCHAR    ucFunctionCode;
+    static USHORT   usLength;
+    static eMBException eException;
+
+    int             i;
+    eMBErrorCode    eStatus = MB_ENOERR;
+    eMBEventType    eEvent;
+
+    /* Check if the protocol stack is ready. */
+    if( eMBState != STATE_ENABLED )
+    {
+        return MB_EILLSTATE;
+    }
+
+    /* Check if there is a event available. If not return control to caller.
+     * Otherwise we will handle the event. */
+    if( xMBPortEventGet( &eEvent ) == TRUE )
+    {
+        switch ( eEvent )
+        {
+        case EV_READY:
+            break;
+
+        case EV_FRAME_RECEIVED:
+            eStatus = peMBFrameReceiveCur( &ucRcvAddress, &ucMBFrame, &usLength );  // eMBTCPReceive()
             if( eStatus == MB_ENOERR )
             {
                 /* Check if the frame is for us. If not ignore the frame. */

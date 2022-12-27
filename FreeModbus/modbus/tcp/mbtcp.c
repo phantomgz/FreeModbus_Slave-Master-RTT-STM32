@@ -120,10 +120,15 @@ eMBTCPReceive( UCHAR * pucRcvAddress, UCHAR ** ppucFrame, USHORT * pusLength )
             *pusLength = usLength - MB_TCP_FUNC;
             eStatus = MB_ENOERR;
 
+            #if 1 // 借用 UID
+            *pucRcvAddress = pucMBTCPFrame[MB_TCP_UID];
+
+            #else
             /* Modbus TCP does not use any addresses. Fake the source address such
              * that the processing part deals with this frame.
              */
             *pucRcvAddress = MB_TCP_PSEUDO_ADDRESS;
+            #endif
         }
     }
     else

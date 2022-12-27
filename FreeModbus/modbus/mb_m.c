@@ -358,6 +358,7 @@ eMBMasterPoll( void )
         case EV_MASTER_FRAME_SENT:
             /* Master is busy now. */
             vMBMasterGetPDUSndBuf( &ucMBFrame );
+            // peMBMasterFrameSendCur -> eMBMasterRTUSend ()
             eStatus = peMBMasterFrameSendCur( ucMBMasterGetDestAddress(), ucMBFrame, usMBMasterGetPDUSndLength() );
             break;
 
